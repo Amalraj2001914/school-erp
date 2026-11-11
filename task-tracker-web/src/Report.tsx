@@ -1,0 +1,285 @@
+import { useEffect, useState } from "react";
+import { ClipboardList, Download, Printer, RefreshCw } from "lucide-react";
+import { api } from "./api";
+
+type Bucket = { total: number; done: number; pending: number; overdue: number; completionRate: number };
+type ReportData = {
+  generatedAt: string;
+  range: { from: string | null; to: string | null };
+  summary: Bucket;
+  byPriority: (Bucket & { priority: string })[];
+  byStudent: (Bucket & { name: string; email: string })[];
+  byTeacher: (Bucket & { name: string })[];
+  overdueTasks: {
+    id: number;
+    title: string;
+    priority: string;
+    dueDate: string;
+    studentName: string | null;
+    teacherName: string | null;
+  }[];
+};
+
+const fmtDate = (d: string) =>
+  new Date(d + "T00:00:00").toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+function Bar({ value }: { value: number }) {
+  return (
+    <div className="bar-cell">
+      <div className="bar">
+        <div className="bar-fill" style={{ width: `${value}%` }} />
+      </div>
+      <span>{value}%</span>
+    </div>
+  );
+}
+
+export default function Report({ adminName }: { adminName: string }) {
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [data, setData] = useState<ReportData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function generate() {
+    setError("");
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (from) params.set("from", from);
+      if (to) params.set("to", to);
+      const qs = params.toString();
+      setData(await api<ReportData>(`/reports/summary${qs ? `?${qs}` : ""}`));
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    generate();
+  }, []);
+
+  function downloadCsv() {
+    if (!data) return;
+    const esc = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`;
+    const lines = [
+      ["Student", "Email", "Total", "Completed", "Pending", "Overdue", "Completion %"].map(esc).join(","),
+      ...data.byStudent.map((s) =>
+        [s.name, s.email, s.total, s.done, s.pending, s.overdue, s.completionRate].map(esc).join(",")
+      ),
+    ];
+    const blob = new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `student-report-${new Date().toLocaleDateString("en-CA")}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  const period = data
+    ? data.range.from || data.range.to
+      ? `${data.range.from ? fmtDate(data.range.from) : "Beginning"} – ${data.range.to ? fmtDate(data.range.to) : "Today"}`
+      : "All time"
+    : "";
+
+  return (
+    <div className="report-page">
+      <div className="page-head no-print">
+        <h1>Reports</h1>
+        <p className="muted">Generate a task performance report for a selected period.</p>
+      </div>
+
+      <section className="panel no-print">
+        <div className="report-controls">
+          <label className="field">
+            <span>From</span>
+            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+          </label>
+          <label className="field">
+            <span>To</span>
+            <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+          </label>
+          <div className="report-buttons">
+            <button className="btn btn-primary" onClick={generate} disabled={loading}>
+              <RefreshCw size={16} /> {loading ? "Generating..." : "Generate"}
+            </button>
+            <button className="btn btn-ghost" onClick={() => window.print()} disabled={!data}>
+              <Printer size={16} /> Print / Save PDF
+            </button>
+            <button className="btn btn-ghost" onClick={downloadCsv} disabled={!data}>
+              <Download size={16} /> CSV
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {error && (
+        <div className="alert alert-error no-print">
+          <span>{error}</span>
+        </div>
+      )}
+
+      {data && (
+        <article className="report">
+          <header className="report-head">
+            <div>
+              <div className="logo">
+                <ClipboardList size={22} /> TaskFlow
+              </div>
+              <h2>Task Performance Report</h2>
+            </div>
+            <dl className="report-meta">
+              <div>
+                <dt>Period</dt>
+                <dd>{period}</dd>
+              </div>
+              <div>
+                <dt>Generated</dt>
+                <dd>{new Date(data.generatedAt).toLocaleString()}</dd>
+              </div>
+              <div>
+                <dt>Generated by</dt>
+                <dd>{adminName}</dd>
+              </div>
+            </dl>
+          </header>
+
+          <section className="kpis">
+            <div className="kpi"><span>Total tasks</span><strong>{data.summary.total}</strong></div>
+            <div className="kpi"><span>Completed</span><strong>{data.summary.done}</strong></div>
+            <div className="kpi"><span>Pending</span><strong>{data.summary.pending}</strong></div>
+            <div className="kpi kpi-warn"><span>Overdue</span><strong>{data.summary.overdue}</strong></div>
+            <div className="kpi"><span>Completion rate</span><strong>{data.summary.completionRate}%</strong></div>
+          </section>
+
+          <section>
+            <h3>Student performance</h3>
+            {data.byStudent.length === 0 ? (
+              <p className="muted">No assigned tasks in this period.</p>
+            ) : (
+              <table className="rtable">
+                <thead>
+                  <tr>
+                    <th>Student</th>
+                    <th className="num">Total</th>
+                    <th className="num">Completed</th>
+                    <th className="num">Pending</th>
+                    <th className="num">Overdue</th>
+                    <th>Completion</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.byStudent.map((s) => (
+                    <tr key={s.email}>
+                      <td>
+                        <strong>{s.name}</strong>
+                        <div className="muted small">{s.email}</div>
+                      </td>
+                      <td className="num">{s.total}</td>
+                      <td className="num">{s.done}</td>
+                      <td className="num">{s.pending}</td>
+                      <td className="num">{s.overdue}</td>
+                      <td><Bar value={s.completionRate} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
+
+          <section className="report-cols">
+            <div>
+              <h3>Priority breakdown</h3>
+              <table className="rtable">
+                <thead>
+                  <tr>
+                    <th>Priority</th>
+                    <th className="num">Total</th>
+                    <th className="num">Completed</th>
+                    <th className="num">Overdue</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.byPriority.map((p) => (
+                    <tr key={p.priority}>
+                      <td><span className={`badge priority-${p.priority}`}>{cap(p.priority)}</span></td>
+                      <td className="num">{p.total}</td>
+                      <td className="num">{p.done}</td>
+                      <td className="num">{p.overdue}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div>
+              <h3>Teacher activity</h3>
+              {data.byTeacher.length === 0 ? (
+                <p className="muted">No tasks created in this period.</p>
+              ) : (
+                <table className="rtable">
+                  <thead>
+                    <tr>
+                      <th>Teacher</th>
+                      <th className="num">Assigned</th>
+                      <th className="num">Completed</th>
+                      <th className="num">Rate</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.byTeacher.map((t) => (
+                      <tr key={t.name}>
+                        <td>{t.name}</td>
+                        <td className="num">{t.total}</td>
+                        <td className="num">{t.done}</td>
+                        <td className="num">{t.completionRate}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </section>
+
+          <section>
+            <h3>Overdue tasks</h3>
+            {data.overdueTasks.length === 0 ? (
+              <p className="muted">No overdue tasks. Everything is on track.</p>
+            ) : (
+              <table className="rtable">
+                <thead>
+                  <tr>
+                    <th>Task</th>
+                    <th>Student</th>
+                    <th>Teacher</th>
+                    <th>Priority</th>
+                    <th>Due</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.overdueTasks.map((t) => (
+                    <tr key={t.id}>
+                      <td>{t.title}</td>
+                      <td>{t.studentName ?? "—"}</td>
+                      <td>{t.teacherName ?? "—"}</td>
+                      <td><span className={`badge priority-${t.priority}`}>{cap(t.priority)}</span></td>
+                      <td>{fmtDate(t.dueDate)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
+
+          <footer className="report-foot">
+            TaskFlow · Confidential · Generated {new Date(data.generatedAt).toLocaleDateString()}
+          </footer>
+        </article>
+      )}
+    </div>
+  );
+}
